@@ -21,6 +21,8 @@ from .ensemble import EnsembleModel
 from .deeponet import DeepONetConfig, DeepONetModel
 from .pino_loss import PINOElasticityLoss
 from .crack_pino_loss import CrackFractureLoss
+from .peridynamic_loss import PeridynamicEquilibriumLoss
+from .variational_loss import VariationalElasticLoss
 
 
 def _weighted_mse(
@@ -156,6 +158,16 @@ class SurrogateTrainer:
         self._model: Optional[SurrogateModel] = None
         self._input_normalizer: Optional[Normalizer] = None
         self._output_normalizer: Optional[Normalizer] = None
+        self._damage_fields: Optional[List[np.ndarray]] = None
+
+    def set_auxiliary_data(self, damage_fields: Optional[List[np.ndarray]]) -> None:
+        """Provide per-sample nodal damage fields for variational_weight loss.
+
+        Must be called before train() if surrogate_config.variational_weight > 0.
+        Each array should have shape (N_i,) matching the corresponding sample's
+        node count and contain AT-2 damage values in [0, 1].
+        """
+        self._damage_fields = damage_fields
 
     def prepare_data(
         self,
@@ -333,35 +345,56 @@ class SurrogateTrainer:
 
             # Crack fracture PINO loss (optional)
             crack_loss_fn = None
+            standalone_pd_loss = None
             out_mean_t = out_std_t = None
             cc = self.config.crack_config
             sc = self.config.surrogate_config
-            if (
-                cc is not None
-                and any(getattr(sc, k, 0.0) > 0
-                        for k in ["stress_intensity", "traction_free", "near_tip", "j_integral"])
-            ):
+
+            _ki_terms = any(getattr(sc, k, 0.0) > 0
+                            for k in ["stress_intensity", "traction_free", "j_integral"])
+            if cc is not None and (_ki_terms or sc.near_tip > 0.0):
+                # Full crack fracture loss: K_I-dependent terms + PD equilibrium
                 crack_loss_fn = CrackFractureLoss(
                     tip_x=cc.tip_x,
                     tip_y=cc.tip_y,
                     r_ki_min=cc.r_ki_min,
                     r_ki_max=cc.r_ki_max,
-                    r_williams=cc.r_williams,
                     r_j=cc.r_j,
                     crack_face_tol=cc.crack_face_tol,
                     stress_intensity=sc.stress_intensity,
                     traction_free=sc.traction_free,
                     near_tip=sc.near_tip,
                     j_integral=sc.j_integral,
+                    horizon_factor=cc.horizon_factor,
                 ).to(device)
-                # Output normalizer stats as tensors for denormalization
-                if self._output_normalizer is not None:
-                    out_mean_t = torch.tensor(
-                        self._output_normalizer.mean, dtype=torch.float32, device=device
-                    )
-                    out_std_t = torch.tensor(
-                        self._output_normalizer.std, dtype=torch.float32, device=device
-                    )
+            elif sc.near_tip > 0.0:
+                # Phase field (no crack_config): PD equilibrium only — no K_I needed
+                standalone_pd_loss = PeridynamicEquilibriumLoss(
+                    horizon_factor=cc.horizon_factor if cc is not None else 3.0
+                ).to(device)
+
+            # Per-channel output normalizer stats for denormalization.
+            # Always created when normalizer is set — shape (output_dim,) so
+            # u_phys * out_std_t.unsqueeze(0) broadcasts correctly to (N, output_dim).
+            if self._output_normalizer is not None:
+                out_mean_t = torch.tensor(
+                    self._output_normalizer.mean, dtype=torch.float32, device=device
+                )  # shape (output_dim,)
+                out_std_t = torch.tensor(
+                    self._output_normalizer.std, dtype=torch.float32, device=device
+                )  # shape (output_dim,)
+
+            # Variational AT-2 elastic loss (optional — requires damage fields)
+            variational_loss_fn = None
+            train_damage_fields: Optional[List[np.ndarray]] = None
+            if (getattr(sc, 'variational_weight', 0.0) > 0.0
+                    and self._damage_fields is not None
+                    and cc is not None):
+                variational_loss_fn = VariationalElasticLoss(
+                    E=float(raw_train_params[0, cc.e_param_idx]),
+                    nu=float(raw_train_params[0, cc.nu_param_idx]),
+                ).to(device)
+                train_damage_fields = self._damage_fields
 
             use_pino = (
                 output_dim >= 2
@@ -393,6 +426,8 @@ class SurrogateTrainer:
                     b_coords  = [train_coords[i] for i in boot_idx]
                     b_outputs = [train_outputs[i] for i in boot_idx]
                     b_raw     = raw_train_params[boot_idx]
+                    b_damage  = ([train_damage_fields[i] for i in boot_idx]
+                                 if train_damage_fields is not None else None)
 
                     member = model._models[mi]
                     h, best_m, best_s = self._run_epoch_loop(
@@ -401,6 +436,9 @@ class SurrogateTrainer:
                         cfg, device, node_weights, pino_fn,
                         crack_loss_fn, out_std_t, out_mean_t, cc,
                         callback if mi == 0 else None,
+                        standalone_pd_loss=standalone_pd_loss,
+                        variational_loss_fn=variational_loss_fn,
+                        train_damage_fields=b_damage,
                     )
                     if best_s:
                         member.load_state_dict(best_s)
@@ -441,6 +479,9 @@ class SurrogateTrainer:
                     test_params, test_coords, test_outputs,
                     cfg, device, node_weights, pino_fn,
                     crack_loss_fn, out_std_t, out_mean_t, cc, callback,
+                    standalone_pd_loss=standalone_pd_loss,
+                    variational_loss_fn=variational_loss_fn,
+                    train_damage_fields=train_damage_fields,
                 )
                 if best_state:
                     model.load_state_dict(best_state)
@@ -508,6 +549,9 @@ class SurrogateTrainer:
         out_mean_t,
         cc,
         callback,
+        standalone_pd_loss=None,
+        variational_loss_fn=None,
+        train_damage_fields=None,
     ):
         """Run the epoch training loop for a single model.
 
@@ -558,7 +602,7 @@ class SurrogateTrainer:
                 if crack_loss_fn is not None:
                     u_phys = pred[0]
                     if out_std_t is not None:
-                        u_phys = u_phys * out_std_t + out_mean_t
+                        u_phys = u_phys * out_std_t.unsqueeze(0) + out_mean_t.unsqueeze(0)
                     raw_p = raw_train_params[idx]
                     crack_component = crack_loss_fn(
                         u_phys, coords_xy,
@@ -566,10 +610,36 @@ class SurrogateTrainer:
                         E=float(raw_p[cc.e_param_idx]),
                         nu=float(raw_p[cc.nu_param_idx]),
                     ) / cfg.batch_size
+                elif standalone_pd_loss is not None:
+                    # Phase field path: PD equilibrium only (no K_I available)
+                    u_phys = pred[0]
+                    if out_std_t is not None:
+                        u_phys = u_phys * out_std_t.unsqueeze(0) + out_mean_t.unsqueeze(0)
+                    crack_component = (
+                        cfg.near_tip * standalone_pd_loss(u_phys[:, :2], coords_xy)
+                    ) / cfg.batch_size
                 else:
                     crack_component = torch.tensor(0.0, device=device)
 
-                physics_loss = elasticity_component + crack_component
+                # Variational AT-2 elastic energy loss (optional)
+                var_component = torch.tensor(0.0, device=device)
+                if variational_loss_fn is not None and train_damage_fields is not None:
+                    u_v = pred[0]
+                    if out_std_t is not None:
+                        u_v = u_v * out_std_t.unsqueeze(0) + out_mean_t.unsqueeze(0)
+                    damage_np = train_damage_fields[idx]
+                    damage_t = numpy_to_tensor(damage_np, device)
+                    traction_val = float(raw_train_params[idx][cc.traction_param_idx]) if cc is not None else 0.0
+                    var_component = (
+                        getattr(cfg, 'variational_weight', 0.0) * variational_loss_fn(
+                            u_v[:, :2], coords_xy,
+                            elements=None,  # will use Delaunay; pass coords_t[0] topology if available
+                            traction=traction_val,
+                            damage=damage_t,
+                        )
+                    ) / cfg.batch_size
+
+                physics_loss = elasticity_component + crack_component + var_component
                 loss = data_loss + physics_loss
                 loss.backward()
                 epoch_loss += data_loss.item() * cfg.batch_size

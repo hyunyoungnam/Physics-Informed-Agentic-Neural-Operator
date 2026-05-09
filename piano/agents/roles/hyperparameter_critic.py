@@ -142,7 +142,7 @@ Your role is to analyze training curves and metrics to diagnose issues and recom
    - `elasticity_loss`: PDE equilibrium + energy-norm residual. If high and not decreasing,
      the model is not satisfying linear elasticity — consider increasing pino_weight or fixing
      the physics loss formulation.
-   - `crack_loss`: Fracture mechanics terms (K_I, traction-free BC, Williams, J-integral).
+   - `crack_loss`: Fracture mechanics terms (traction-free BC, peridynamic near-tip, J-integral).
      If high relative to elasticity_loss, the model is violating fracture BCs specifically.
      The Physicist agent owns these weights — flag for physics reconfiguration.
    A term that stays flat (not decreasing) while data loss improves means it's too weak to
@@ -654,7 +654,7 @@ class HyperparameterCriticAgent(BaseAgent[CritiqueResult]):
             f"## Physicist's Proposal\n{phys_summary}\n\n"
             "Check these proposals:\n"
             "1. Capacity sanity: n_layers ≥ 2, d_model ≥ 32 (DeepONet: hidden_dim ≥ 32, n_basis ≥ 16)\n"
-            "2. Physics ordering: no crack terms (traction_free/stress_intensity/near_tip/j_integral)\n"
+            "2. Physics ordering: no crack terms (traction_free/near_tip/j_integral)\n"
             "   enabled before equilibrium has converged (test loss still decreasing).\n"
             "3. Consistency: do the proposals address the actual issue identified in Rounds 1-2?\n\n"
             "VALIDATION_STATUS: approved | concerns | rejected\n"

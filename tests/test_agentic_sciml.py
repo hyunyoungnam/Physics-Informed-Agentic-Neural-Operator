@@ -2203,9 +2203,8 @@ def run_agentic_loop_demo(
     triang = mtri.Triangulation(coords[:, 0], coords[:, 1], valid_triangles)
 
     def _add_crack_overlay(ax):
-        """Draw crack line and tip marker on an axis."""
+        """Draw crack line on an axis."""
         ax.plot([0, crack_length], [0.5, 0.5], 'w-', lw=1.5, zorder=4)
-        ax.plot(crack_length, 0.5, 'w^', ms=5, zorder=4)
 
     # Von Mises stress common colour scale (clip singularity spike at 95th pct)
     vm_all = np.concatenate([vm_pred, vm_gt])
@@ -2217,8 +2216,8 @@ def run_agentic_loop_demo(
     ax4 = fig.add_subplot(gs[1, 0])
 
     cf4 = ax4.tricontourf(triang, np.clip(vm_pred, vmin, vmax),
-                          levels=levels, cmap='hot_r', extend='max')
-    ax4.triplot(triang, 'k-', lw=0.08, alpha=0.12)
+                          levels=levels, cmap='plasma', extend='max')
+    ax4.triplot(triang, 'w-', lw=0.08, alpha=0.10)
     _add_crack_overlay(ax4)
     ax4.set_xlim(-0.05, 1.05)
     ax4.set_ylim(-0.05, 1.05)
@@ -2239,8 +2238,8 @@ def run_agentic_loop_demo(
         vm_gt_plot = vm_gt
 
     cf5 = ax5.tricontourf(triang, np.clip(vm_gt_plot, vmin, vmax),
-                          levels=levels, cmap='hot_r', extend='max')
-    ax5.triplot(triang, 'k-', lw=0.08, alpha=0.12)
+                          levels=levels, cmap='plasma', extend='max')
+    ax5.triplot(triang, 'w-', lw=0.08, alpha=0.10)
     _add_crack_overlay(ax5)
     ax5.set_xlim(-0.05, 1.05)
     ax5.set_ylim(-0.05, 1.05)

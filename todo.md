@@ -104,19 +104,6 @@
 
 ---
 
-## Future Work
-
-### F1. Replace Williams enrichment with peridynamics in physics loss term
-**Status**: Planned  
-**Motivation**: The current PINO physics loss (`CrackFractureLoss`) uses the Williams asymptotic expansion to enforce near-tip displacement/stress fields. Williams is a local LEFM approximation that breaks down (a) for large-scale damage zones where the phase field `d > 0.1` extends well beyond the K-dominant zone, and (b) for crack-tip shielding and branching scenarios outside the mode-I plane.  
-**Direction**: Replace or augment the Williams-based B-matrix with a peridynamic correspondence formulation. Peridynamics (bond-based or state-based) defines equilibrium nonlocally — no singularity, no process-zone assumptions, and naturally handles discontinuities. The physics loss term would penalise violation of the peridynamic equation of motion at each collocation point instead of matching the Williams expansion coefficients.  
-**Key references**: Silling (2000) bond-based peridynamics; Silling & Lehoucq (2010) state-based; Haghighat et al. (2021) PINN+peridynamics.  
-**Implementation notes**:
-- Horizon δ ~ 3h (3 mesh spacings) defines the nonlocal interaction neighbourhood
-- Bond force density replaces the K_I extraction integral
-- B-matrix construction from Williams series (`crack_pino_loss.py`) can be replaced with a sparse peridynamic operator assembled from node neighbour lists
-- `PhysicistAgent` system prompt must be updated to describe the new loss terms
-
 ---
 
 ## Open Issues
@@ -126,6 +113,17 @@
 **Symptom**: From round 3 onwards the training loss is ~1e-4 while test loss spikes to 4–14×. The mock LLM for the critic returns UNDERFITTING every round regardless, so the agent keeps increasing model capacity instead of adding regularisation.  
 **Impact**: Demo loop does not converge to the best model when using MockLLMProvider.  
 **Fix**: Use `--use-real-llm` with `ANTHROPIC_API_KEY` set. The real critic reads the train/test gap and correctly diagnoses OVERFITTING, allowing the Architect to respond with dropout/weight-decay increases.
+
+### ✅ C. Replace Williams near-tip term with peridynamic equilibrium residual
+**Status**: Resolved  
+**Root cause**: The Williams asymptotic expansion (Term 3 in `CrackFractureLoss`) is a local LEFM approximation valid only in the K-dominant zone — it breaks down for large phase-field damage zones where `d > 0.1` extends well beyond the crack tip, and gives spurious gradients at broken bonds.  
+**Fix applied**:
+- New module `piano/surrogate/peridynamic_loss.py`: `PeridynamicEquilibriumLoss` implements the bond-based static PD equation Σ_j (1−d_ij)² s_ij ê_ij = 0 at every node; horizon δ = 3h_avg (scipy `cKDTree.query_pairs`); bond list cached per mesh hash; dimensionless normalization via s_var × n_avg
+- `crack_pino_loss.py`: removed `_williams_displacement` + `_williams_residual`; `near_tip` weight now controls PD equilibrium; `r_williams` parameter removed; `horizon_factor` added
+- `base.py / CrackConfig`: removed `r_williams`, added `horizon_factor: float = 3.0`
+- `trainer.py`: fixed `r_williams=cc.r_williams` TypeError; added standalone PD path for `crack_config=None` (phase field) when `near_tip > 0`
+- `agentic_trainer.py`: `AgenticTrainingConfig.crack_config` field added; wired into `_train_once()` and `_train_brief()`
+- `physicist.py`: system prompt updated — `near_tip` now described as PD equilibrium with `horizon_factor` tuning guidance
 
 ### ✅ B. CrackFractureLoss bc_weight scale mismatch
 **Status**: Resolved  

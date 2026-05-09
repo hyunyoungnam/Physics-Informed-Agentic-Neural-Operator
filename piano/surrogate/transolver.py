@@ -21,6 +21,31 @@ from .base import SurrogateModel, TransolverConfig, PredictionResult
 from ..data.zero_copy import numpy_to_tensor
 
 
+class FiLMLayer(nn.Module):
+    """Feature-wise Linear Modulation by global physics parameters.
+
+    Applied once per transformer layer after attention, using the raw (B, n_params)
+    parameter vector so each layer can independently modulate hidden features
+    based on the global physics state (K_I, traction, etc.).
+    This allows the slice-assignment softmax to differentiate physical regions
+    (near-tip vs far-field) based on the global loading condition.
+    """
+
+    def __init__(self, n_params: int, d_model: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_params, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 2 * d_model),
+        )
+
+    def forward(self, x: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
+        # x: (B, N, D)   params: (B, n_params)
+        out = self.net(params)               # (B, 2D)
+        gamma, beta = out.chunk(2, dim=-1)   # each (B, D)
+        return gamma.unsqueeze(1) * x + beta.unsqueeze(1)
+
+
 class PhysicsAttention(nn.Module):
     """
     Physics-Attention (Slice-Attention) mechanism from Transolver.
@@ -212,6 +237,12 @@ class TransolverModel(SurrogateModel, nn.Module):
             for _ in range(cfg.n_layers)
         ])
 
+        # FiLM layers — one per transformer block; conditions hidden features on global params
+        # n_params = input_dim (params only, not coords), applied using original (B, n_params) vector
+        self.film_layers = nn.ModuleList([
+            FiLMLayer(input_dim, cfg.d_model) for _ in range(cfg.n_layers)
+        ])
+
         # Output projection
         self.output_proj = nn.Linear(cfg.d_model, cfg.output_dim)
 
@@ -243,9 +274,10 @@ class TransolverModel(SurrogateModel, nn.Module):
         # Project to hidden dimension
         x = self.input_proj(x)  # (B, N, d_model)
 
-        # Apply Transolver blocks
-        for layer in self.layers:
+        # Apply Transolver blocks with per-layer FiLM conditioning on global params
+        for i, layer in enumerate(self.layers):
             x = layer(x, coords)
+            x = self.film_layers[i](x, params)  # params: (B, n_params) — before expansion
 
         # Project to output
         out = self.output_proj(x)  # (B, N, output_dim)

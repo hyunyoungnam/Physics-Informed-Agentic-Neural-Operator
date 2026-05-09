@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
-from piano.surrogate.base import TransolverConfig
+from piano.surrogate.base import TransolverConfig, CrackConfig
 from piano.surrogate.trainer import SurrogateTrainer, TrainingConfig, TrainingResult
 
 if TYPE_CHECKING:
@@ -69,6 +69,7 @@ class AgenticTrainingConfig:
     data_analysis_report_path: Optional[str] = None
     tip_coords: Optional[Any] = None
     parameter_names: Optional[Any] = None
+    crack_config: Optional[CrackConfig] = None
 
 
 @dataclass
@@ -363,6 +364,7 @@ class AgenticSurrogateTrainer:
             normalize_outputs=True,
             train_test_split=0.2,
             random_seed=self.config.random_seed,
+            crack_config=self.config.crack_config,
         )
 
         self._trainer = SurrogateTrainer(training_config)
@@ -526,6 +528,7 @@ class AgenticSurrogateTrainer:
             normalize_outputs=True,
             train_test_split=0.2,
             random_seed=self.config.random_seed,
+            crack_config=self.config.crack_config,
         )
         trainer = SurrogateTrainer(training_config)
         result = trainer.train(self._params, self._coordinates, self._outputs)

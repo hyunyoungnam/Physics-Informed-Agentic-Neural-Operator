@@ -28,20 +28,21 @@ class CrackConfig:
         ki_param_idx:    Index of K_I in the raw parameter vector
         r_ki_min:        Inner radius of K_I extraction annulus
         r_ki_max:        Outer radius of K_I extraction annulus
-        r_williams:      Radius of Williams matching zone
         r_j:             Outer radius of J-integral domain
         crack_face_tol:  Half-width tolerance for crack-face element detection
+        horizon_factor:  PD horizon δ = horizon_factor × h_avg (default 3.0)
     """
     tip_x: float
     tip_y: float
-    e_param_idx: int = 0
+    e_param_idx: int = 0        # param order: E, nu, traction, K_I, G_c, crack_len, l_0
     nu_param_idx: int = 1
+    traction_param_idx: int = 2  # index of applied traction in raw parameter vector
     ki_param_idx: int = 3
     r_ki_min: float = 0.02
     r_ki_max: float = 0.10
-    r_williams: float = 0.05
     r_j: float = 0.15
     crack_face_tol: float = 0.02
+    horizon_factor: float = 3.0
 
 import numpy as np
 
@@ -74,9 +75,9 @@ class TransolverConfig:
         scheduler_type: LR scheduler type ('plateau', 'cosine', 'none')
         activation: Activation function ('gelu', 'relu', 'silu')
     """
-    slice_num: int = 32
+    slice_num: int = 64
     n_heads: int = 8
-    d_model: int = 256
+    d_model: int = 128
     n_layers: int = 6
     mlp_ratio: float = 4.0
     dropout: float = 0.0
@@ -91,8 +92,9 @@ class TransolverConfig:
     tip_weight: float = 0.0      # >0 upweights nodes near singularity tip by (1 + tip_weight/r)
     stress_intensity: float = 0.0  # K_I consistency loss weight
     traction_free: float = 0.0     # crack face traction-free BC loss weight
-    near_tip: float = 0.0          # Williams near-tip asymptotic residual loss weight
+    near_tip: float = 0.0          # peridynamic equilibrium residual loss weight
     j_integral: float = 0.0        # J-integral conservation loss weight
+    variational_weight: float = 0.0  # AT-2 variational elastic energy loss weight
     optimizer_type: str = "adamw"
     scheduler_type: str = "plateau"
     activation: str = "gelu"
@@ -119,6 +121,7 @@ class TransolverConfig:
             "traction_free": self.traction_free,
             "near_tip": self.near_tip,
             "j_integral": self.j_integral,
+            "variational_weight": self.variational_weight,
             "optimizer_type": self.optimizer_type,
             "scheduler_type": self.scheduler_type,
             "activation": self.activation,

@@ -10,31 +10,31 @@ The agentic loop is inspired by [AgenticSciML (Jiang, 2024)](paper/AGENTICSCIML_
 
 ## Demo Result
 
-V-notch stress prediction: 30 FEM samples, 5 agentic HPO rounds, 78.2% test-loss improvement. Physics terms enabled sequentially by the Physicist agent. Peak stress error: 55.5%.
+Edge-crack phase field fracture: 40 samples (pre-generated FEniCS AT-2), up to 6 agentic HPO rounds, joint prediction of `[u_x, u_y, log1p(σ_vm)]`. Physics terms enabled sequentially by the Physicist agent, including the peridynamic equilibrium residual.
 
-![V-Notch Demo](tests/test_outputs/agentic_vnotch_demo.png)
+![Phase Field Demo](tests/test_outputs/agentic_phase_field_demo.png)
 
 **Top row (left to right):**
 - **Loss evolution** — cumulative training and test loss across all HPO rounds; round boundaries marked
 - **HPO convergence** — test loss per round with best-round annotation
-- **Physics weight progression** — Physicist sequentially enables equilibrium → energy → traction_free → stress_intensity → near_tip
+- **Physics weight progression** — Physicist sequentially enables equilibrium → energy → traction_free → near_tip (PD)
 
 **Bottom row (left to right):**
-- **Surrogate** — predicted von Mises stress derived from displacement output `(N, 2)`
-- **Ground Truth** — FEM solution (Williams eigenfunction expansion)
+- **Surrogate** — predicted von Mises stress (inverted from `log1p` prediction)
+- **Ground Truth** — FEniCS AT-2 phase field solution (degraded stress, correct tip concentration)
 - **Peak stress comparison** — bar chart of surrogate vs GT peak σ_VM with percentage error
 
 ### Run the Demo
 
 ```bash
-# Default: 30 samples, 80 epochs/round, up to 8 rounds (mock LLM)
-python tests/test_agentic_sciml.py
+# Default: 40 samples from disk, 80 epochs/round, up to 6 rounds (mock LLM, no FEniCS needed)
+python scripts/generate_phase_field_demo.py
 
 # Faster run
-python tests/test_agentic_sciml.py --n-samples 30 --epochs 80 --rounds 4
+python scripts/generate_phase_field_demo.py --epochs 40 --rounds 4
 
-# With real LLM agents (requires ANTHROPIC_API_KEY)
-python tests/test_agentic_sciml.py --use-real-llm
+# Custom output path
+python scripts/generate_phase_field_demo.py --output my_demo.png
 ```
 
 ---
@@ -75,8 +75,8 @@ Traditional neural operators require manual hyperparameter tuning. PIANO uses **
 │    │ • arch_type     │            │ physics enabling│                  │
 │    │ • d_model       │            │ eq → energy →   │                  │
 │    │ • learning_rate │            │ traction_free → │                  │
-│    │ • dropout       │            │ stress_intensity │                  │
-│    │ • trunk_dropout │            │ → near_tip      │                  │
+│    │ • dropout       │            │ → near_tip (PD) │                  │
+│    │ • trunk_dropout │            │ → j_integral    │                  │
 │    └────────┬────────┘            └────────┬────────┘                  │
 │             └──────────────┬───────────────┘                           │
 │                            ↓                                           │
@@ -136,7 +136,7 @@ Selects architecture and proposes hyperparameters based on the Critic's diagnosi
 Sequentially enables fracture mechanics terms — each term is only activated once the previous one has stabilised:
 
 ```
-equilibrium → energy → traction_free → stress_intensity → near_tip → j_integral
+equilibrium → energy → traction_free → near_tip → j_integral
 ```
 
 | Term | What it enforces | Activated when |
@@ -144,8 +144,7 @@ equilibrium → energy → traction_free → stress_intensity → near_tip → j
 | `equilibrium` | Nodal force balance residual (label-free) | Round 1 |
 | `energy` | Strain energy norm consistency | Equilibrium stable |
 | `traction_free` | σ = 0 on crack/notch faces | Energy stable |
-| `stress_intensity` | K_I least-squares consistency | BC stable |
-| `near_tip` | Williams Mode I expansion | K_I stable |
+| `near_tip` | Peridynamic equilibrium: Σ_j (1−d_ij)² s_ij ê_ij = 0 | BC stable |
 | `j_integral` | Domain J = K_I²/E | All others stable |
 
 If the physics-to-data loss ratio exceeds 10%, the Physicist halves all active weights to prevent physics from overriding the data signal.
@@ -201,10 +200,9 @@ L_total = L_MSE + pino_weight × L_energy + pino_eq_weight × L_equilibrium
 Both terms use fully differentiable PyTorch `einsum` + `scatter_add_`. Coordinates are always sliced to `(x, y)` before being passed to the physics losses, so enriched 6-feature trunk inputs are handled correctly.
 
 ### Fracture Mechanics Loss (CrackFractureLoss)
-Four additional terms enabled sequentially by the Physicist:
-- **K_I consistency** — least-squares SIF extraction from near-tip displacement
+Three additional terms enabled sequentially by the Physicist:
 - **Crack face BC** — traction-free condition on crack/notch faces (normalised by `K_I²/(2π·r_min)` for scale consistency)
-- **Williams residual** — near-tip displacement matches Mode I expansion
+- **Peridynamic equilibrium** — bond-based residual `Σ_j (1−d_ij)² s_ij ê_ij = 0` at every node; valid across the full mesh and inside large phase-field damage zones; when `crack_config=None` (phase field), runs as a standalone `PeridynamicEquilibriumLoss` module requiring no K_I input
 - **J-integral** — domain J = K_I²/E (plane stress)
 
 ---
@@ -220,8 +218,9 @@ piano/
 │   ├── agentic_trainer.py      # 3-agent HPO wrapper
 │   ├── ensemble.py             # Ensemble (seed-diverse members)
 │   ├── pino_loss.py            # PINO elasticity loss (equilibrium + energy)
-│   ├── crack_pino_loss.py      # Fracture mechanics loss (K_I, J-integral)
-│   └── base.py                 # TransolverConfig, DeepONetConfig, CrackConfig
+│   ├── crack_pino_loss.py      # Fracture mechanics loss (K_I, traction-free, PD, J-integral)
+│   ├── peridynamic_loss.py     # Bond-based peridynamic equilibrium residual (standalone)
+│   └── base.py                 # TransolverConfig, DeepONetConfig, CrackConfig (horizon_factor)
 │
 ├── agents/                      # LLM-based agents
 │   ├── base.py                 # BaseAgent, AgentContext
@@ -233,17 +232,17 @@ piano/
 │
 ├── data/                        # Dataset utilities
 │   ├── dataset.py              # FEMDataset, FEMSample (with elements field)
-│   └── fem_generator.py        # V-notch FEM sample generation (MFEM or synthetic)
+│   └── phase_field_generator.py  # FEniCS AT-2 phase field fracture data generation
 │
 ├── geometry/                    # Mesh generation
 │   ├── notch.py                # V-notch geometry + mesh (filters notch interior)
 │   └── crack.py                # Edge crack geometry
 │
 ├── mesh/                        # Mesh handling
-│   └── mfem_manager.py         # PyMFEM wrapper
+│   └── fenics_manager.py       # FEniCS mesh + function space management
 │
 └── solvers/                     # FEM solvers
-    └── mfem_solver.py          # PyMFEM linear-elasticity
+    └── fenics_phase_field.py   # FEniCS AT-2 phase field fracture (staggered scheme)
 ```
 
 ---
@@ -268,17 +267,16 @@ piano/
 
 | Parameter | Default | Agent-tunable | Description |
 |-----------|---------|---------------|-------------|
-| `d_model` | 256 | Architect | Hidden dimension |
+| `d_model` | 128 | Architect | Hidden dimension |
 | `n_layers` | 6 | Architect | Transformer layers |
 | `n_heads` | 8 | Architect | Attention heads (must divide d_model) |
-| `slice_num` | 32 | Architect | Physics-attention slices |
+| `slice_num` | 64 | Architect | Physics-attention slices |
 | `dropout` | 0.0 | Architect | Dropout rate |
 | `learning_rate` | 1e-3 | Architect | Learning rate |
 | `equilibrium` | 0.01 | Physicist | Equilibrium residual weight (enabled round 1) |
 | `energy` | 0.0 | Physicist | Strain energy loss weight |
 | `traction_free` | 0.0 | Physicist | Crack face BC weight |
-| `stress_intensity` | 0.0 | Physicist | K_I consistency weight |
-| `near_tip` | 0.0 | Physicist | Williams expansion weight |
+| `near_tip` | 0.0 | Physicist | Peridynamic equilibrium residual weight |
 | `tip_weight` | 2.0 | Fixed | Notch-tip loss amplification |
 | `output_dim` | 2 | Fixed | Displacement field (x, y) |
 
@@ -303,7 +301,7 @@ pip install -e ".[all]"
 pip install pytest-asyncio  # required for async agent tests
 ```
 
-PyMFEM is required for real FEM data generation. If unavailable, the demo falls back to a Williams eigenfunction synthetic solver automatically.
+FEniCS (dolfinx) is required for real FEM data generation. The demo uses AT-2 phase field fracture solved with FEniCS; if unavailable the demo can be run with pre-generated data in `phase_field_data/`.
 
 **LLM provider:** Set `ANTHROPIC_API_KEY` in your environment and pass `--use-real-llm` to use Claude 4 (`claude-haiku-4-5-20251001` by default) for all three agents. Without it, `MockLLMProvider` is used for development and testing.
 
@@ -315,8 +313,10 @@ PyMFEM is required for real FEM data generation. If unavailable, the demo falls 
 - Wu et al. (2024): *Transolver: A Fast Transformer Solver for PDEs on General Geometries*, ICML 2024
 - Lu et al. (2021): *Learning Nonlinear Operators via DeepONet*, Nature Machine Intelligence
 - Li et al. (2024): *Physics-Informed Neural Operator for Learning Partial Differential Equations*
-- Williams (1957): *On the Stress Distribution at the Base of a Stationary Crack*
-- [MFEM](https://mfem.org/) — Modular Finite Element Methods library
+- Silling (2000): *Reformulation of elasticity theory for discontinuities and long-range forces*, J. Mech. Phys. Solids — peridynamic equilibrium loss
+- Bobaru & Hu (2012): *The meaning, selection, and use of the peridynamic horizon*, Int. J. Fract. — horizon selection (δ = 3h)
+- Bourdin et al. (2000): *Numerical experiments in revisited brittle fracture*, J. Mech. Phys. Solids — AT-2 phase field model
+- [FEniCS/dolfinx](https://fenicsproject.org/) — phase field fracture solver
 
 ---
 

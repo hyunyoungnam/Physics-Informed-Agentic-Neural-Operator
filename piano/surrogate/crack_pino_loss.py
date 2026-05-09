@@ -11,9 +11,10 @@ Four complementary physics-informed loss terms:
    Enforces σ_yy = σ_xy = 0 on elements adjacent to the crack face
    (y ≈ tip_y, x < tip_x).
 
-3. Williams Asymptotic Residual
-   Enforces that the near-tip displacement field (r < r_williams) matches the
-   Mode I Williams expansion exactly.
+3. Peridynamic Equilibrium Residual  (replaces former Williams Asymptotic Residual)
+   Bond-based peridynamic equilibrium: Σ_j (1−d_ij)² s_ij ê_ij = 0 at every node.
+   Works on the full mesh (not limited to the K-dominant zone); naturally handles
+   large phase-field damage zones where the Williams LEFM expansion breaks down.
 
 4. J-Integral Conservation
    Uses the domain form of the J-integral and enforces J = K_I²/E (plane stress).
@@ -22,6 +23,7 @@ All terms operate in **physical (SI) units**. The caller (trainer) is responsibl
 for denormalizing predicted displacements before passing them here.
 
 Reference:
+  Silling (2000), "Reformulation of elasticity theory for discontinuities..."
   Williams (1957), "On the stress distribution at the base of a stationary crack"
   Li et al. (2021), "Physics-Informed Neural Operator for Learning PDEs", ICLR 2024
 """
@@ -32,6 +34,7 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 from .pino_loss import _compute_B_matrices
+from .peridynamic_loss import PeridynamicEquilibriumLoss
 
 
 class CrackFractureLoss(nn.Module):
@@ -49,13 +52,13 @@ class CrackFractureLoss(nn.Module):
         tip_y:          Crack tip y-coordinate
         r_ki_min:       Inner radius of K_I extraction annulus
         r_ki_max:       Outer radius of K_I extraction annulus
-        r_williams:     Radius of Williams matching zone (r < r_williams)
         r_j:            Outer radius of J-integral domain
         crack_face_tol: Half-width tolerance for detecting crack-face elements
         stress_intensity: Weight for K_I consistency loss
         traction_free:    Weight for crack face BC loss
-        near_tip:         Weight for Williams asymptotic loss
+        near_tip:         Weight for peridynamic equilibrium residual loss
         j_integral:       Weight for J-integral conservation loss
+        horizon_factor:   PD horizon δ = horizon_factor × h_avg  (default 3.0)
     """
 
     def __init__(
@@ -64,20 +67,19 @@ class CrackFractureLoss(nn.Module):
         tip_y: float,
         r_ki_min: float = 0.02,
         r_ki_max: float = 0.10,
-        r_williams: float = 0.05,
         r_j: float = 0.15,
         crack_face_tol: float = 0.02,
         stress_intensity: float = 1.0,
         traction_free: float = 1.0,
-        near_tip: float = 1.0,
+        near_tip: float = 1.0,        # weight for peridynamic equilibrium residual
         j_integral: float = 1.0,
+        horizon_factor: float = 3.0,  # PD horizon δ = horizon_factor × h_avg
     ):
         super().__init__()
         self.tip_x = tip_x
         self.tip_y = tip_y
         self.r_ki_min = r_ki_min
         self.r_ki_max = r_ki_max
-        self.r_williams = r_williams
         self.r_j = r_j
         self.crack_face_tol = crack_face_tol
         self.stress_intensity = stress_intensity
@@ -85,7 +87,10 @@ class CrackFractureLoss(nn.Module):
         self.near_tip = near_tip
         self.j_integral = j_integral
 
-        # Mesh topology cache — computed once per unique coordinate set
+        # Peridynamic equilibrium loss (replaces Williams asymptotic residual)
+        self._pd_loss = PeridynamicEquilibriumLoss(horizon_factor=horizon_factor)
+
+        # FEM mesh topology cache — computed once per unique coordinate set
         self._coords_hash: int = -1
         self._elems: torch.Tensor = None
         self._B: torch.Tensor = None
@@ -139,43 +144,6 @@ class CrackFractureLoss(nn.Module):
     def _kappa(nu: float) -> float:
         """Kolosov constant for plane stress."""
         return (3.0 - nu) / (1.0 + nu)
-
-    # ------------------------------------------------------------------
-    # Williams expansion
-    # ------------------------------------------------------------------
-
-    def _williams_displacement(
-        self,
-        coords: torch.Tensor,  # (N, 2)
-        K_I: float,
-        E: float,
-        nu: float,
-    ) -> torch.Tensor:
-        """
-        Mode I Williams displacement field at every mesh node.
-
-        u_x = K_I/(2μ) * sqrt(r/2π) * cos(θ/2) * (κ - 1 + 2sin²(θ/2))
-        u_y = K_I/(2μ) * sqrt(r/2π) * sin(θ/2) * (κ + 1 - 2cos²(θ/2))
-
-        Returns: (N, 2)
-        """
-        mu = E / (2.0 * (1.0 + nu))
-        kappa = self._kappa(nu)
-
-        dx = coords[:, 0] - self.tip_x
-        dy = coords[:, 1] - self.tip_y
-        r = (dx ** 2 + dy ** 2).sqrt().clamp(min=1e-12)
-        theta = torch.atan2(dy, dx)
-
-        sqrt_r_2pi = (r / (2.0 * torch.pi)).sqrt()
-        cos_h = torch.cos(theta / 2.0)
-        sin_h = torch.sin(theta / 2.0)
-
-        coeff = K_I / (2.0 * mu) * sqrt_r_2pi
-        u_x = coeff * cos_h * (kappa - 1.0 + 2.0 * sin_h ** 2)
-        u_y = coeff * sin_h * (kappa + 1.0 - 2.0 * cos_h ** 2)
-
-        return torch.stack([u_x, u_y], dim=-1)  # (N, 2)
 
     # ------------------------------------------------------------------
     # Term 1: K_I Consistency
@@ -267,42 +235,6 @@ class CrackFractureLoss(nn.Module):
         return (a_cf * (sig[:, 1] ** 2 + sig[:, 2] ** 2)).sum() / (
             total_a * sig_ref_sq
         )
-
-    # ------------------------------------------------------------------
-    # Term 3: Williams Asymptotic Residual
-    # ------------------------------------------------------------------
-
-    def _williams_residual(
-        self,
-        u_pred: torch.Tensor,  # (N, 2)
-        coords: torch.Tensor,  # (N, 2)
-        K_I: float,
-        E: float,
-        nu: float,
-    ) -> torch.Tensor:
-        """
-        Near-tip (r < r_williams) displacement must match the Williams expansion.
-
-        Loss: mean||u_pred - u_williams||² / mean||u_williams||²
-        """
-        dx = coords[:, 0] - self.tip_x
-        dy = coords[:, 1] - self.tip_y
-        r = (dx ** 2 + dy ** 2).sqrt()
-        mask = r < self.r_williams
-
-        if mask.sum() == 0:
-            return torch.tensor(0.0, device=u_pred.device)
-
-        # Williams GT — detach so we don't backprop through the formula itself
-        u_wil = self._williams_displacement(coords, K_I, E, nu).detach()
-
-        u_pred_nt = u_pred[mask]
-        u_wil_nt = u_wil[mask]
-
-        residual_sq = ((u_pred_nt - u_wil_nt) ** 2).mean()
-        normalization = (u_wil_nt ** 2).mean().clamp(min=1e-30)
-
-        return residual_sq / normalization
 
     # ------------------------------------------------------------------
     # Term 4: J-Integral Conservation
@@ -414,9 +346,7 @@ class CrackFractureLoss(nn.Module):
             )
 
         if self.near_tip > 0.0:
-            total = total + self.near_tip * self._williams_residual(
-                u_pred, coords, K_I, E, nu
-            )
+            total = total + self.near_tip * self._pd_loss(u_pred, coords)
 
         if self.j_integral > 0.0:
             total = total + self.j_integral * self._j_integral(

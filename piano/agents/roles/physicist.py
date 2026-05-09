@@ -15,8 +15,8 @@ Target: physics loss contribution ≈ 1–5% of data loss.
   1–5%  → ideal regularization regime
   > 10% → weight is overriding the data signal (reduce immediately)
 
-All 6 terms are always mathematically present; the physicist controls only
-their weights. Crack-specific terms (traction_free, stress_intensity, near_tip,
+All 5 terms are always mathematically present; the physicist controls only
+their weights. Crack-specific terms (traction_free, near_tip [PD],
 j_integral) start at 0.0 and are enabled only once the base physics
 (equilibrium + energy) is stable in the 1-5% ratio range.
 Architecture and optimizer hyperparameters are the Architect's responsibility.
@@ -80,13 +80,18 @@ The ground-truth data comes from a reliable FEM solver. All physics (equilibrium
 
 ## Physics Loss Terms
 
-All 6 terms are always mathematically present in the loss — only weights are varied.
+All 5 terms are always mathematically present in the loss — only weights are varied.
 Crack-specific terms start at 0.0 and are enabled only after base physics is stable.
 
 ### equilibrium — Equilibrium PDE Residual
 - Enforces: ∇·σ = 0 (balance of linear momentum)
 - Enable when: test loss has plateaued
 - Starting weight: 1e-3
+- **CRACK/FRACTURE WARNING**: Set `equilibrium = 0.0` when crack faces are present.
+  ∇u is discontinuous across crack faces — autograd produces unbounded strong-form
+  residuals at the exact nodes where the network is least accurate.
+  Use `energy` (variational) and `near_tip` (peridynamic) instead.
+  `equilibrium` is only appropriate for smooth, crack-free problems.
 
 ### energy — Elastic Energy Norm
 - Enforces: displacement minimizes elastic strain energy
@@ -98,20 +103,27 @@ Crack-specific terms start at 0.0 and are enabled only after base physics is sta
 - Enable when: equilibrium + energy ratio is already in 1–5% range
 - Starting weight: 1e-3
 
-### stress_intensity — K_I Consistency
-- Enforces: extracted K_I from near-tip displacements matches ground truth K_I
-- Enable when: base physics ratio is in range and test loss plateaued
-- Starting weight: 1e-3
-
-### near_tip — Williams Asymptotic Residual
-- Enforces: near-tip displacement matches Mode I Williams expansion u ~ √r f(θ)
+### near_tip — Peridynamic Equilibrium Residual
+- Enforces: bond-based peridynamic equilibrium Σ_j (1−d_ij)² s_ij ê_ij = 0 at every node
+- Works on the full mesh; damaged bonds (d→1) contribute zero — no spurious gradient inside crack
+- Valid outside the K-dominant zone; works for phase field even when crack_config is None
 - Enable when: base physics ratio is in range and test loss plateaued
 - Starting weight: 5e-4
+- horizon_factor (geometry, set in CrackConfig): δ = horizon_factor × h_avg; default 3.0
+  - Smaller (2.0): more local, fewer bonds, faster but misses longer-range imbalance
+  - Larger (4.0–5.0): more nonlocal, catches broader imbalance at higher compute cost
 
 ### j_integral — J-Integral Conservation
 - Enforces: domain J-integral = K_I²/E (plane stress)
 - Enable when: base physics ratio is in range and test loss plateaued
 - Starting weight: 2e-4
+
+### variational_weight — Variational AT-2 Elastic Energy
+- Enforces: ∫ g(d) ½ ε:Cε dΩ ≈ W_ext (no displacement labels needed)
+- V-DeepONet (Goswami 2022): achieves <1% error on AT-2 phase field with 11 samples
+- Requires damage field in data pipeline (set via trainer.set_auxiliary_data)
+- Acts as regularizer alongside MSE; preferred over `equilibrium` for phase field problems
+- Starting weight: 1e-3; increase when predicted displacement in damaged zones is inconsistent
 
 ## Weight Calibration Rules
 
@@ -133,9 +145,9 @@ PHYSICIST_PROMPT = """## Current Physics Loss Configuration
 - equilibrium: {equilibrium}
 - energy: {energy}
 - traction_free: {traction_free}
-- stress_intensity: {stress_intensity}
 - near_tip: {near_tip}
 - j_integral: {j_integral}
+- variational_weight: {variational_weight}
 
 ## Loss History (sampled)
 - Train losses (data only): {train_losses}
@@ -167,7 +179,7 @@ Rules:
 2. If ratio 1–5% and test loss improving: hold all weights (data is still learning)
 3. If ratio 1–5% and test loss plateaued: consider enabling one crack term at 1e-3
 4. If ratio < 0.5% and test loss plateaued: increase lowest active weight by 2×
-5. Crack terms (traction_free, stress_intensity, near_tip, j_integral) start at 0.0.
+5. Crack terms (traction_free, near_tip, j_integral) start at 0.0.
    Enable only when equilibrium + energy ratio is already in the 1–5% range.
 
 Format your response as:
@@ -178,9 +190,9 @@ CHANGES:
 - equilibrium: [value] (reason)
 - energy: [value] (reason)
 - traction_free: [value] (reason)
-- stress_intensity: [value] (reason)
 - near_tip: [value] (reason)
 - j_integral: [value] (reason)
+- variational_weight: [value] (reason)
 
 REASONING: [Why these specific weight values]
 EXPECTED_IMPACT: [Expected effect on physics/data ratio and test loss]
@@ -196,7 +208,7 @@ class PhysicistAgent(BaseAgent[PhysicsProposal]):
     Physicist Agent for physics loss weight calibration.
 
     Targets physics/data loss ratio of 1–5%.
-    Enforces crack term ordering (traction_free → stress_intensity → near_tip → j_integral)
+    Enforces crack term ordering (traction_free → near_tip → j_integral)
     for physical coherence, but uses small weights so physics acts as soft regularization.
     """
 
@@ -260,8 +272,8 @@ class PhysicistAgent(BaseAgent[PhysicsProposal]):
 
         prev_str = "None"
         if previous_configs:
-            _physics_keys = {"equilibrium", "energy", "traction_free", "stress_intensity",
-                             "near_tip", "j_integral"}
+            _physics_keys = {"equilibrium", "energy", "traction_free",
+                             "near_tip", "j_integral", "variational_weight"}
             prev_lines = []
             for i, cfg in enumerate(previous_configs):
                 phys_cfg = {k: v for k, v in cfg.get("config", {}).items() if k in _physics_keys}
@@ -273,9 +285,9 @@ class PhysicistAgent(BaseAgent[PhysicsProposal]):
             equilibrium=current_config.get("equilibrium", 0.0),
             energy=current_config.get("energy", 0.0),
             traction_free=current_config.get("traction_free", 0.0),
-            stress_intensity=current_config.get("stress_intensity", 0.0),
             near_tip=current_config.get("near_tip", 0.0),
             j_integral=current_config.get("j_integral", 0.0),
+            variational_weight=current_config.get("variational_weight", 0.0),
             train_losses=train_losses,
             test_losses=test_losses,
             pino_losses=pino_losses,
@@ -347,8 +359,8 @@ class PhysicistAgent(BaseAgent[PhysicsProposal]):
 
     def _parse_changes(self, text: str) -> Dict[str, Any]:
         changes = {}
-        for param in ['equilibrium', 'energy', 'traction_free', 'stress_intensity',
-                      'near_tip', 'j_integral']:
+        for param in ['equilibrium', 'energy', 'traction_free',
+                      'near_tip', 'j_integral', 'variational_weight']:
             match = re.search(rf'{param}:\s*([0-9.e-]+)', text, re.IGNORECASE)
             if match:
                 try:
@@ -401,7 +413,7 @@ class PhysicistAgent(BaseAgent[PhysicsProposal]):
         all_physics = [
             current_config.get(k, 0.0)
             for k in ["equilibrium", "energy", "traction_free",
-                      "stress_intensity", "near_tip", "j_integral"]
+                      "near_tip", "j_integral"]
         ]
         if is_unstable and any(v > 0 for v in all_physics):
             issues.append(PhysicsIssue.PHYSICS_DESTABILIZING)
@@ -420,16 +432,13 @@ class PhysicistAgent(BaseAgent[PhysicsProposal]):
             eq = current_config.get("equilibrium", 0.0)
             en = current_config.get("energy", 0.0)
             tf = current_config.get("traction_free", 0.0)
-            si = current_config.get("stress_intensity", 0.0)
             nt = current_config.get("near_tip", 0.0)
             ji = current_config.get("j_integral", 0.0)
 
-            # Can enable first physics terms (equilibrium/energy) or next crack term
+            # Ordering: equilibrium/energy → traction_free → near_tip → j_integral
             if eq == 0.0 or en == 0.0 or (eq > 0 and en > 0 and tf == 0.0):
                 issues.append(PhysicsIssue.TEST_LOSS_PLATEAUED)
-            elif tf > 0 and si == 0.0:
-                issues.append(PhysicsIssue.NEXT_CRACK_TERM_READY)
-            elif si > 0 and nt == 0.0:
+            elif tf > 0 and nt == 0.0:
                 issues.append(PhysicsIssue.NEXT_CRACK_TERM_READY)
             elif nt > 0 and ji == 0.0:
                 issues.append(PhysicsIssue.NEXT_CRACK_TERM_READY)
@@ -484,7 +493,7 @@ class PhysicistAgent(BaseAgent[PhysicsProposal]):
         ratio = self._compute_physics_ratio(training_history)
         plateaued = self._test_loss_plateaued(training_history)
         active_terms = [k for k in ("equilibrium", "energy", "traction_free",
-                                    "stress_intensity", "near_tip", "j_integral")
+                                    "near_tip", "j_integral", "variational_weight")
                         if current_config.get(k, 0.0) > 0]
         prompt = (
             "ROUND 2 (ANALYSIS) — Do NOT propose any weight values.\n\n"
