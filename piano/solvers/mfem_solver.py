@@ -462,15 +462,18 @@ class MFEMSolver(SolverInterface):
                     )
 
     def _extract_vector_field(self, gf, dim: int) -> np.ndarray:
-        """Extract vector field data from GridFunction."""
+        """Extract vector field data from GridFunction using bulk array access."""
+        mfem = _get_mfem()
         num_nodes = self._mesh_manager.num_nodes
+        raw = np.array(gf.GetDataArray())  # (num_nodes * dim,) flat, component-major
+        # MFEM stores all x-dofs first, then all y-dofs (Ordering::byNODES)
+        if raw.size == num_nodes * dim:
+            return raw.reshape(dim, num_nodes).T.copy()
+        # Fallback: per-dof extraction when ordering differs
         data = np.zeros((num_nodes, dim), dtype=np.float64)
-
         for i in range(num_nodes):
             for d in range(dim):
-                dof = self._fespace.DofToVDof(i, d)
-                data[i, d] = gf[dof]
-
+                data[i, d] = gf[self._fespace.DofToVDof(i, d)]
         return data
 
     def _extract_scalar_field(self, gf) -> np.ndarray:

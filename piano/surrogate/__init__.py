@@ -2,9 +2,12 @@
 Surrogate model module for adaptive learning.
 
 Provides surrogate model interfaces and training utilities for predicting
-FEM simulation outputs from input parameters using Transolver neural operator.
+FEM simulation outputs from input parameters using Transolver / DeepONet.
+
+Physics-informed loss functions live in piano.physics (not here).
 """
 
+# ── Base types & configs ──────────────────────────────────────────────────────
 from .base import (
     SurrogateModel,
     SurrogateConfig,
@@ -13,16 +16,22 @@ from .base import (
     PredictionResult,
     SurrogateType,
 )
+
+# ── Model architectures ───────────────────────────────────────────────────────
 from .transolver import TransolverModel, PhysicsAttention
 from .ensemble import EnsembleModel
 from .deeponet import DeepONetConfig, DeepONetModel
+
+# ── Training ──────────────────────────────────────────────────────────────────
 from .trainer import SurrogateTrainer, TrainingConfig, TrainingResult
-from .evaluator import SurrogateEvaluator, WeakRegion, UncertaintyAnalysis
 from .agentic_trainer import (
     AgenticSurrogateTrainer,
     AgenticTrainingConfig,
     AgenticTrainingResult,
 )
+
+# ── Evaluation & active learning ──────────────────────────────────────────────
+from .evaluator import SurrogateEvaluator, WeakRegion, UncertaintyAnalysis
 
 __all__ = [
     # Base
@@ -42,7 +51,6 @@ __all__ = [
     "SurrogateTrainer",
     "TrainingConfig",
     "TrainingResult",
-    # Agentic Training
     "AgenticSurrogateTrainer",
     "AgenticTrainingConfig",
     "AgenticTrainingResult",

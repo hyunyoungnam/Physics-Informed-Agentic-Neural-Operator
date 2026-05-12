@@ -12,11 +12,14 @@ The workflow:
 """
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+from .dataset import FEMSample
 
 logger = logging.getLogger(__name__)
 
@@ -40,27 +43,6 @@ class VNotchFEMConfig:
     height: float = 1.0
     resolution: int = 25
     fe_order: int = 1
-
-
-@dataclass
-class FEMSample:
-    """
-    A single FEM simulation result.
-
-    Attributes:
-        parameters: Dict of material/loading parameters
-        coordinates: Node coordinates (N, 2)
-        displacement: Displacement field (N, 2)
-        von_mises: Von Mises stress at elements (optional)
-        elements: Triangle connectivity (M, 3) — already excludes notch interior
-        metadata: Additional simulation info
-    """
-    parameters: Dict[str, float]
-    coordinates: np.ndarray
-    displacement: np.ndarray
-    von_mises: Optional[np.ndarray] = None
-    elements: Optional[np.ndarray] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def generate_vnotch_fem_sample(
@@ -178,6 +160,7 @@ def generate_vnotch_fem_sample(
     mfem_elements = mesh_manager.get_elements()
 
     return FEMSample(
+        sample_id=str(uuid.uuid4()),
         parameters={"E": E, "nu": nu, "traction": traction},
         coordinates=mfem_coords.astype(np.float32),
         displacement=displacement.astype(np.float32),
@@ -306,6 +289,7 @@ def _generate_synthetic_sample(
     disp_mag = np.linalg.norm(displacement, axis=1)
 
     return FEMSample(
+        sample_id=str(uuid.uuid4()),
         parameters={"E": E, "nu": nu, "traction": traction},
         coordinates=vertices.astype(np.float32),
         displacement=displacement.astype(np.float32),

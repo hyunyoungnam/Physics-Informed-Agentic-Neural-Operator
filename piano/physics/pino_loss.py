@@ -121,6 +121,28 @@ class PINOElasticityLoss(nn.Module):
         self.eq_weight = eq_weight
         self.energy_weight = energy_weight
         self.register_buffer("C", _build_C(nominal_nu))
+        self._coords_hash: int = -1
+        self._elems: Optional[torch.Tensor] = None
+        self._B: Optional[torch.Tensor] = None
+        self._areas: Optional[torch.Tensor] = None
+
+    def _ensure_mesh_cache(self, coords: torch.Tensor, device: torch.device) -> None:
+        """Triangulate and cache B-matrices; re-runs only when coordinates change."""
+        coords_np = coords.detach().cpu().numpy()
+        h = hash(coords_np.tobytes())
+        if h == self._coords_hash:
+            self._elems = self._elems.to(device)
+            self._B = self._B.to(device)
+            self._areas = self._areas.to(device)
+            return
+        tri = Delaunay(coords_np)
+        elems_np = tri.simplices
+        xy = torch.tensor(coords_np[elems_np], dtype=torch.float32, device=device)
+        B, areas = _compute_B_matrices(xy)
+        self._elems = torch.tensor(elems_np, dtype=torch.long, device=device)
+        self._B = B
+        self._areas = areas
+        self._coords_hash = h
 
     def forward(
         self,
@@ -145,15 +167,10 @@ class PINOElasticityLoss(nn.Module):
         C = _build_C(nu).to(device) if nu is not None and nu != self.nominal_nu else self.C
         N = coords.shape[0]
 
-        # --- Delaunay triangulation (numpy, detached from autograd) ----------
-        coords_np = coords.detach().cpu().numpy()
-        tri = Delaunay(coords_np)
-        elems = torch.tensor(tri.simplices, dtype=torch.long, device=device)  # (M, 3)
+        self._ensure_mesh_cache(coords, device)
+        elems = self._elems
+        B, areas = self._B, self._areas
         M = elems.shape[0]
-
-        # --- Vectorized B matrices -------------------------------------------
-        xy = coords[elems]                     # (M, 3, 2)
-        B, areas = _compute_B_matrices(xy)     # (M, 3, 6), (M,)
 
         # Only use displacement components (first 2 columns)
         u_pred_2 = u_pred[:, :2]  # (N, 2)

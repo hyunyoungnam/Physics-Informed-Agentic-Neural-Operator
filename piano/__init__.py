@@ -2,12 +2,10 @@
 PIANO: Physics-Informed Agentic Neural Operator
 
 A self-improving surrogate framework for computational mechanics that combines:
-- Transolver neural operator for learning FEM field predictions
-- PINO loss for physics-informed training (equilibrium + energy norm)
-- 3-agent HPO system for autonomous hyperparameter optimization:
-  - CriticAgent: Diagnoses training issues
-  - ArchitectAgent: Proposes architecture/optimizer changes
-  - PhysicistAgent: Proposes physics loss configuration
+- Transolver / DeepONet neural operators for learning FEM field predictions
+- Physics-informed losses (PINO, CrackFractureLoss, PeridynamicEquilibriumLoss, Variational)
+- 6-agent HPO debate system for autonomous hyperparameter optimization
+- Active learning loop with FEniCS phase-field fracture simulations
 
 Example (Agentic Training):
     >>> from piano.surrogate.agentic_trainer import (
@@ -25,11 +23,11 @@ Example (Agentic Training):
 __version__ = "0.3.0"
 __author__ = "H.-Y. Nam, Q. Jiang"
 
-# Core API - MFEM mesh management
+# ── Mesh management ───────────────────────────────────────────────────────────
 from piano.mesh.base import MeshManager
 from piano.mesh.mfem_manager import MFEMManager
 
-# Solver API
+# ── Solver API ────────────────────────────────────────────────────────────────
 from piano.solvers.base import (
     SolverInterface,
     PhysicsType,
@@ -39,17 +37,17 @@ from piano.solvers.base import (
 )
 from piano.solvers.mfem_solver import MFEMSolver
 
-# Evaluation API
+# ── Evaluation ────────────────────────────────────────────────────────────────
 from piano.evaluation.pipeline import EvaluationPipeline, EvaluationResult
 
-# Adaptive Learning API
+# ── Active learning orchestration ─────────────────────────────────────────────
 from piano.orchestration.adaptive import (
     AdaptiveOrchestrator,
     AdaptiveConfig,
     AdaptiveResult,
 )
 
-# Surrogate API
+# ── Surrogate models & training ───────────────────────────────────────────────
 from piano.surrogate.base import TransolverConfig
 from piano.surrogate.trainer import SurrogateTrainer, TrainingConfig
 from piano.surrogate.agentic_trainer import (
@@ -58,10 +56,18 @@ from piano.surrogate.agentic_trainer import (
     AgenticTrainingResult,
 )
 
-# Dataset API
+# ── Physics-informed losses ───────────────────────────────────────────────────
+from piano.physics import (
+    PINOElasticityLoss,
+    CrackFractureLoss,
+    PeridynamicEquilibriumLoss,
+    VariationalElasticLoss,
+)
+
+# ── Dataset ───────────────────────────────────────────────────────────────────
 from piano.data.dataset import FEMDataset, FEMSample, DatasetConfig
 
-# Geometry API
+# ── Geometry ──────────────────────────────────────────────────────────────────
 from piano.geometry import (
     CrackGeometry,
     EdgeCrack,
@@ -71,13 +77,12 @@ from piano.geometry import (
 )
 
 __all__ = [
-    # Version info
     "__version__",
     "__author__",
-    # Core classes - Mesh management
+    # Mesh
     "MeshManager",
     "MFEMManager",
-    # Solver classes
+    # Solvers
     "SolverInterface",
     "MFEMSolver",
     "PhysicsType",
@@ -87,7 +92,7 @@ __all__ = [
     # Evaluation
     "EvaluationPipeline",
     "EvaluationResult",
-    # Adaptive Learning
+    # Orchestration
     "AdaptiveOrchestrator",
     "AdaptiveConfig",
     "AdaptiveResult",
@@ -98,6 +103,11 @@ __all__ = [
     "AgenticSurrogateTrainer",
     "AgenticTrainingConfig",
     "AgenticTrainingResult",
+    # Physics losses
+    "PINOElasticityLoss",
+    "CrackFractureLoss",
+    "PeridynamicEquilibriumLoss",
+    "VariationalElasticLoss",
     # Dataset
     "FEMDataset",
     "FEMSample",

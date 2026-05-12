@@ -496,8 +496,8 @@ class AgenticSurrogateTrainer:
                 change_description=arch_proposal.code_change_description,
                 context_files=[
                     "piano/surrogate/deeponet.py",
-                    "piano/surrogate/pino_loss.py",
-                    "piano/surrogate/crack_pino_loss.py",
+                    "piano/physics/pino_loss.py",
+                    "piano/physics/crack_pino_loss.py",
                     "piano/surrogate/trainer.py",
                 ],
                 validation_command="python -m pytest tests/ -x -q 2>&1 | tail -20",

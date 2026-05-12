@@ -19,10 +19,10 @@ from .base import TransolverConfig, EnsembleConfig, SurrogateModel, CrackConfig
 from .transolver import TransolverModel
 from .ensemble import EnsembleModel
 from .deeponet import DeepONetConfig, DeepONetModel
-from .pino_loss import PINOElasticityLoss
-from .crack_pino_loss import CrackFractureLoss
-from .peridynamic_loss import PeridynamicEquilibriumLoss
-from .variational_loss import VariationalElasticLoss
+from piano.physics.pino_loss import PINOElasticityLoss
+from piano.physics.crack_pino_loss import CrackFractureLoss
+from piano.physics.peridynamic_loss import PeridynamicEquilibriumLoss
+from piano.physics.variational_loss import VariationalElasticLoss
 
 
 def _weighted_mse(

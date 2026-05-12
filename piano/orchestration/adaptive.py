@@ -25,16 +25,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 from ..data.dataset import DatasetConfig, FEMDataset, FEMSample
-from ..data.loader import SimulationResultLoader
-from ..mesh.mfem_manager import MFEMManager
-from ..solvers.base import (
-    BoundaryCondition,
-    BoundaryConditionType,
-    MaterialProperties,
-    PhysicsConfig,
-    PhysicsType,
-)
-from ..solvers.mfem_solver import MFEMSolver
 from ..surrogate.base import SurrogateConfig, SurrogateModel, TransolverConfig
 from ..surrogate.evaluator import SurrogateEvaluator, UncertaintyAnalysis, WeakRegion
 from ..surrogate.trainer import SurrogateTrainer, TrainingConfig, TrainingResult
@@ -96,7 +86,7 @@ class AdaptiveConfig:
     Essential parameters only - derived values computed at runtime.
 
     Attributes:
-        base_mesh_path: Path to base mesh file
+        base_mesh_path: Optional path kept for MFEM-based scripts (not used by the orchestrator)
         output_dir: Directory for outputs
         parameter_bounds: Bounds for each parameter {name: (min, max)}
         initial_samples: Number of initial LHS samples
@@ -104,14 +94,13 @@ class AdaptiveConfig:
         convergence_threshold: Error threshold for convergence
         patience: Iterations without improvement before stopping
         n_ensemble: Number of ensemble models for uncertainty
-        physics_config: Optional physics configuration for simulations
         use_agentic_hpo: Whether to use LLM-based hyperparameter optimization
         use_agentic_proposer: Whether to use LLM-based sample proposal
         max_hpo_rounds: Maximum HPO rounds per training session
         llm_model: LLM model for agents
     """
-    base_mesh_path: Optional[Path]   # None when use_phase_field=True
-    output_dir: Path
+    base_mesh_path: Optional[Path] = None
+    output_dir: Path = field(default_factory=lambda: Path("outputs"))
     parameter_bounds: Dict[str, Tuple[float, float]] = field(
         default_factory=lambda: {"delta_R": (-0.5, 0.5)}
     )
@@ -120,7 +109,6 @@ class AdaptiveConfig:
     convergence_threshold: float = 0.05
     patience: int = 3
     n_ensemble: int = 5
-    physics_config: Optional[PhysicsConfig] = None
     random_seed: int = 42
     use_agentic_hpo: bool = False
     use_agentic_proposer: bool = False
@@ -129,8 +117,6 @@ class AdaptiveConfig:
     use_budget_agent: bool = False
     use_mesh_strategy_agent: bool = False
     tip_coords: Optional[np.ndarray] = None
-    # Phase field fracture backend (replaces MFEM when True)
-    use_phase_field: bool = False
     phase_field_resolution: int = 30
     phase_field_n_load_steps: int = 20
     # Surrogate config override — if None, a default is chosen per backend
@@ -153,15 +139,13 @@ class AdaptiveConfig:
     def surrogate_config(self):
         if self.surrogate_config_override is not None:
             return self.surrogate_config_override
-        if self.use_phase_field:
-            # Compact Transolver sized for small FEA datasets
-            return TransolverConfig(
-                d_model=64, n_layers=3, n_heads=4, slice_num=16,
-                mlp_ratio=2.0, dropout=0.1, learning_rate=5e-4,
-                batch_size=4, epochs=300, patience=100,
-                scheduler_type="cosine", optimizer_type="adamw",
-            )
-        return SurrogateConfig()
+        # Compact Transolver sized for small phase-field FEA datasets
+        return TransolverConfig(
+            d_model=64, n_layers=3, n_heads=4, slice_num=16,
+            mlp_ratio=2.0, dropout=0.1, learning_rate=5e-4,
+            batch_size=4, epochs=300, patience=100,
+            scheduler_type="cosine", optimizer_type="adamw",
+        )
 
     def __post_init__(self):
         self.output_dir = Path(self.output_dir)
@@ -744,19 +728,12 @@ class AdaptiveOrchestrator:
         return self.evaluator.suggest_samples(analysis, budget=n)
 
     def _run_simulations(self, param_list: List[Dict[str, float]]) -> None:
-        """
-        Run FEM simulations for given parameters.
-
-        Args:
-            param_list: List of parameter dictionaries
-        """
-        result_loader = SimulationResultLoader()
-
+        """Run FEM simulations for given parameters."""
         for i, params in enumerate(param_list):
             logger.info(f"Running simulation {i+1}/{len(param_list)}: {params}")
 
             try:
-                sample = self._run_single_simulation(params, result_loader)
+                sample = self._run_single_simulation(params)
                 self.dataset.add_sample(sample)
                 logger.info(f"Sample {sample.sample_id} added (valid={sample.is_valid})")
 
@@ -772,14 +749,8 @@ class AdaptiveOrchestrator:
                 )
                 self.dataset.add_sample(sample)
 
-    def _run_single_simulation(
-        self,
-        params: Dict[str, float],
-        result_loader: SimulationResultLoader
-    ) -> FEMSample:
-        if self.config.use_phase_field:
-            return self._run_phase_field_simulation(params)
-        return self._run_mfem_simulation(params, result_loader)
+    def _run_single_simulation(self, params: Dict[str, float]) -> FEMSample:
+        return self._run_phase_field_simulation(params)
 
     def _run_phase_field_simulation(self, params: Dict[str, float]) -> FEMSample:
         """Run a single phase field FEA sample via DOLFINx."""
@@ -820,77 +791,9 @@ class AdaptiveOrchestrator:
         sample.parameters["load_ratio"] = float(load_ratio)
         return sample
 
-    def _run_mfem_simulation(
-        self,
-        params: Dict[str, float],
-        result_loader: SimulationResultLoader
-    ) -> FEMSample:
-        """Run a single MFEM linear-elasticity simulation."""
-        mesh_manager = MFEMManager(self.config.base_mesh_path)
-
-        if "delta_R" in params:
-            morphed_coords = self._apply_morphing(mesh_manager, params["delta_R"])
-            mesh_manager.update_nodes(morphed_coords)
-
-        physics = self.config.physics_config
-        if physics is None:
-            physics = PhysicsConfig(
-                physics_type=PhysicsType.LINEAR_ELASTICITY,
-                material=MaterialProperties(
-                    E=params.get("E", 200e9),
-                    nu=params.get("nu", 0.3),
-                ),
-                boundary_conditions=[
-                    BoundaryCondition(
-                        bc_type=BoundaryConditionType.DISPLACEMENT,
-                        boundary_id=1,
-                        value=0.0,
-                    ),
-                    BoundaryCondition(
-                        bc_type=BoundaryConditionType.TRACTION,
-                        boundary_id=2,
-                        value=np.array([0.0, -1e6]),
-                    ),
-                ],
-            )
-
-        solver = MFEMSolver(order=1)
-        solver.setup(mesh_manager, physics)
-
-        sample_id = f"sim_{len(self.dataset)}_{np.random.randint(10000)}"
-        output_dir = self.meshes_dir / sample_id
-        output_dir.mkdir(exist_ok=True)
-
-        result = solver.solve(output_dir)
-        return result_loader.from_solver_result(
-            solver_result=result,
-            mesh_manager=mesh_manager,
-            parameters=params,
-            sample_id=sample_id,
-        )
-
     def _train_surrogate(self) -> TrainingResult:
-        """Train surrogate model on current dataset."""
-        if self.config.use_phase_field:
-            return self._train_surrogate_phase_field()
-        return self._train_surrogate_mfem()
-
-    def _train_surrogate_mfem(self) -> TrainingResult:
-        """Standard MFEM training path."""
-        try:
-            parameters, coordinates_list, outputs_list = self.dataset.prepare_training_data(
-                output_field="displacement",
-                valid_only=True,
-            )
-        except ValueError as e:
-            return TrainingResult(success=False, error_message=str(e))
-
-        base_manager = MFEMManager(str(self.config.base_mesh_path))
-        self._coordinates = base_manager.get_nodes()
-
-        if self.config.use_agentic_hpo:
-            return self._train_with_agentic_hpo(parameters, coordinates_list, outputs_list)
-        return self._train_standard(parameters, coordinates_list, outputs_list)
+        """Train surrogate on the current dataset."""
+        return self._train_surrogate_phase_field()
 
     def _train_surrogate_phase_field(self) -> TrainingResult:
         """Phase field training path: Williams-enriched coords, stacked [u_x, u_y, log1p(σ_vm)]."""
@@ -1036,16 +939,11 @@ class AdaptiveOrchestrator:
         return np.zeros(len(self._coordinates))
 
     def _apply_h_refinement(self) -> None:
-        """Uniformly refine the base mesh and update the stored path."""
-        try:
-            mgr = MFEMManager(str(self.config.base_mesh_path))
-            mgr.apply_uniform_refinement(n_levels=1)
-            refined_path = self.meshes_dir / "base_mesh_refined.mesh"
-            mgr.save(refined_path)
-            self.config.base_mesh_path = refined_path
-            logger.info(f"h-refinement applied → {refined_path} ({mgr.num_nodes} nodes)")
-        except Exception as e:
-            logger.warning(f"h-refinement failed: {e}")
+        """Request finer resolution for subsequent phase-field samples."""
+        new_res = min(self.config.phase_field_resolution + 10, 80)
+        if new_res > self.config.phase_field_resolution:
+            self.config.phase_field_resolution = new_res
+            logger.info(f"h-refinement: phase_field_resolution → {new_res}")
 
     def get_dataset(self) -> FEMDataset:
         """Get the current dataset."""

@@ -1,31 +1,31 @@
 """
 Agent role implementations for agentic SciML.
 
-Core agents for the HPO debate loop:
-- ResultAnalystAgent: Observes training curves (Round 1 — no proposals)
-- HyperparameterCriticAgent: Diagnoses training issues + validates proposals (Rounds 1 & 4)
-- ArchitectAgent: Analyzes causes + proposes architecture/optimizer changes (Rounds 2 & 3)
-- PhysicistAgent: Analyzes physics + proposes loss configuration changes (Rounds 2 & 3)
-- EngineerAgent: Implements code-level changes via Claude Code CLI
-- DebuggerAgent: Diagnoses code failures and provides targeted fix descriptions
+HPO debate loop (4-round structured debate):
+- ResultAnalystAgent:       observes training curves (Round 1, no proposals)
+- HyperparameterCriticAgent: diagnoses training issues + validates proposals (Rounds 1 & 4)
+- ArchitectAgent:           proposes architecture/optimizer changes (Rounds 2 & 3)
+- PhysicistAgent:           proposes physics loss configuration (Rounds 2 & 3)
+- EngineerAgent:            implements code changes via Claude Code CLI
+- DebuggerAgent:            diagnoses EngineerAgent failures
 
-Knowledge and data agents:
-- KnowledgeRetrieverAgent: Surfaces relevant KB entries before each debate round
-- DataAnalystAgent: Pre-training dataset analysis (Phase 0)
+Knowledge & data agents (injected into debate context):
+- KnowledgeRetrieverAgent:  surfaces relevant KB entries before each round
+- DataAnalystAgent:         pre-training dataset EDA (Phase 0)
 
 Candidate selection:
-- SelectorEnsembleAgent: 3-LLM majority vote for candidate selection (replaces brief-training)
+- SelectorEnsembleAgent:    3-LLM majority vote (replaces brief-training fallback)
 
 Active learning agents:
-- AdaptiveProposerAgent: LLM-based sample proposal targeting weak regions
-- MeshStrategyAgent: r/h-refinement strategy for MFEM meshes
-- BudgetAgent: Decides when to collect more data vs switch to HPO vs stop
+- AdaptiveProposerAgent:    targets weak / high-uncertainty regions
+- MeshStrategyAgent:        r/h-refinement resolution decisions
+- BudgetAgent:              decides when to collect more data vs stop
 """
 
-# Result Analyst Agent (Round 1: observation only)
+# ── HPO debate: observation ───────────────────────────────────────────────────
 from piano.agents.roles.result_analyst import ResultAnalystAgent, AnalystObservation
 
-# Hyperparameter Critic Agent (Rounds 1 & 4)
+# ── HPO debate: diagnosis & validation ───────────────────────────────────────
 from piano.agents.roles.hyperparameter_critic import (
     HyperparameterCriticAgent,
     CritiqueResult,
@@ -33,34 +33,24 @@ from piano.agents.roles.hyperparameter_critic import (
     TrainingIssue,
 )
 
-# Architect Agent (Rounds 2 & 3)
+# ── HPO debate: proposals ─────────────────────────────────────────────────────
 from piano.agents.roles.architect import ArchitectAgent, ArchitectureProposal
-
-# Physicist Agent (Rounds 2 & 3)
 from piano.agents.roles.physicist import PhysicistAgent, PhysicsProposal, PhysicsIssue
 
-# Adaptive Proposer Agent (for active learning)
-from piano.agents.roles.adaptive_proposer import AdaptiveProposerAgent, AdaptiveProposal
-
-# Engineer Agent (code-level changes via Claude Code CLI)
+# ── HPO debate: implementation ────────────────────────────────────────────────
 from piano.agents.roles.engineer import EngineerAgent, EngineerResult
-
-# Debugger Agent (diagnoses code failures for EngineerAgent)
 from piano.agents.roles.debugger import DebuggerAgent, DebugResult
 
-# Knowledge Retriever Agent + KB
+# ── Knowledge & data ──────────────────────────────────────────────────────────
 from piano.agents.roles.knowledge_retriever import KnowledgeRetrieverAgent, KBEntry
-
-# Data Analyst Agent (pre-training dataset analysis)
 from piano.agents.roles.data_analyst import DataAnalystAgent, DataAnalysis
 
-# Selector Ensemble Agent (3-LLM voting for candidate selection)
+# ── Candidate selection ───────────────────────────────────────────────────────
 from piano.agents.roles.selector_ensemble import SelectorEnsembleAgent, SelectionResult, VoteResult
 
-# Mesh Strategy Agent (r/h-refinement decisions for MFEM)
+# ── Active learning ───────────────────────────────────────────────────────────
+from piano.agents.roles.adaptive_proposer import AdaptiveProposerAgent, AdaptiveProposal
 from piano.agents.roles.mesh_strategy import MeshStrategyAgent, MeshStrategyDecision
-
-# Budget Agent (active learning stopping criterion)
 from piano.agents.roles.budget import BudgetAgent, BudgetDecision
 
 __all__ = [

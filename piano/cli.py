@@ -220,7 +220,6 @@ def run_active_learn(args) -> int:
     }
 
     config = AdaptiveConfig(
-        base_mesh_path=None,
         output_dir=Path(args.output),
         parameter_bounds=param_bounds,
         initial_samples=args.initial_samples,
@@ -229,7 +228,6 @@ def run_active_learn(args) -> int:
         patience=5,
         n_ensemble=1 if args.no_ensemble else args.n_ensemble,
         random_seed=args.seed,
-        use_phase_field=True,
         phase_field_resolution=args.resolution,
         phase_field_n_load_steps=args.load_steps,
         use_agentic_hpo=args.agentic_hpo,

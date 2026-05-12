@@ -4,7 +4,7 @@
 agents:
   # Evaluator Agent - Creates Guideline.md + Evaluate.py
   evaluator:
-    model: "claude-3-opus-20240229"
+    model: "claude-sonnet-4-6"
     temperature: 0.2
     max_tokens: 8192
     role: "evaluator"
@@ -12,7 +12,7 @@ agents:
 
   # Proposer Agent - Suggests mutations
   proposer:
-    model: "gpt-4-turbo"
+    model: "claude-sonnet-4-6"
     temperature: 0.7
     max_tokens: 4096
     role: "proposer"
@@ -20,7 +20,7 @@ agents:
 
   # Critic Agent - Pre-flight validation
   critic:
-    model: "claude-3-opus-20240229"
+    model: "claude-sonnet-4-6"
     temperature: 0.2
     max_tokens: 4096
     role: "critic"
@@ -28,15 +28,15 @@ agents:
 
   # Engineer Agent - Implementation
   engineer:
-    model: "gpt-4-turbo"
+    model: "claude-sonnet-4-6"
     temperature: 0.1
     max_tokens: 4096
     role: "engineer"
-    description: "Implements approved mutations using manager/morphing APIs"
+    description: "Implements approved mutations via Claude Code CLI"
 
   # Debugger Agent - Error fixing
   debugger:
-    model: "claude-3-opus-20240229"
+    model: "claude-haiku-4-5-20251001"
     temperature: 0.3
     max_tokens: 4096
     role: "debugger"
@@ -44,7 +44,7 @@ agents:
 
   # Result Analyst Agent - Post-simulation analysis
   result_analyst:
-    model: "gpt-4-turbo"
+    model: "claude-haiku-4-5-20251001"
     temperature: 0.4
     max_tokens: 4096
     role: "result_analyst"
@@ -52,15 +52,15 @@ agents:
 
   # Retriever Agent - Knowledge base search
   retriever:
-    model: "gpt-4-turbo"
+    model: "claude-haiku-4-5-20251001"
     temperature: 0.0
     max_tokens: 2048
     role: "retriever"
     description: "Searches knowledge base for relevant FEA techniques"
 
-  # Selector Agent - Ensemble voting
+  # Selector Agent - Ensemble voting (majority vote across 3 instances)
   selector:
-    model: "gpt-4-turbo"
+    model: "claude-haiku-4-5-20251001"
     temperature: 0.1
     max_tokens: 2048
     role: "selector"
@@ -75,15 +75,9 @@ debate:
 
 # LLM Provider Settings
 providers:
-  openai:
-    api_key_env: "OPENAI_API_KEY"
-    organization_env: "OPENAI_ORG_ID"
-    default_model: "gpt-4-turbo"
-    timeout: 120
-
   anthropic:
     api_key_env: "ANTHROPIC_API_KEY"
-    default_model: "claude-3-opus-20240229"
+    default_model: "claude-sonnet-4-6"
     timeout: 120
 
 # Retry Settings
